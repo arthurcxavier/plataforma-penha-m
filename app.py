@@ -9,6 +9,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
+from io import StringIO
+from urllib.request import Request, urlopen
+import os
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG  (deve ser o primeiro comando Streamlit)
@@ -23,7 +26,30 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTES
 # ─────────────────────────────────────────────────────────────────────────────
-DATA_PATH = Path(r"C:\Users\arthu\OneDrive\Programas - Copia\IC-Feminicidio\EDA\basegeral_2021-2025.csv")
+LOCAL_DATA_PATH = Path("basegeral_2021-2025.csv")
+
+
+def get_data_url() -> str:
+    return (
+        st.secrets.get("DATA_URL")
+        or os.getenv("DATA_URL")
+        or DEFAULT_DATA_URL
+    )
+
+
+def build_data_url_candidates(url: str) -> list[str]:
+    candidates = [url]
+    marker = "/penham/"
+    if marker in url:
+        candidates.append(url.replace(marker, "/", 1))
+    return list(dict.fromkeys(candidates))
+
+
+def read_csv_from_url(url: str) -> pd.DataFrame:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=30) as response:
+        content = response.read().decode("utf-8", errors="replace")
+    return pd.read_csv(StringIO(content), index_col=0)
 
 PALETTE = [
     "#5E1675", "#8B2FC9", "#A855F7", "#C77DFF",
@@ -136,7 +162,30 @@ div[data-testid="stToolbar"] { display: none; }
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner="Carregando dados...")
 def load_data() -> pd.DataFrame:
-    df = pd.read_csv(DATA_PATH, index_col=0)
+    errors = []
+    df = None
+
+    for url in build_data_url_candidates(get_data_url()):
+        try:
+            df = read_csv_from_url(url)
+            break
+        except Exception as exc:
+            errors.append(f"{url} -> {exc}")
+
+    if df is None:
+        if LOCAL_DATA_PATH.exists():
+            st.warning(
+                "Nao foi possivel carregar o CSV remoto. "
+                "Usando arquivo local como fallback."
+            )
+            df = pd.read_csv(LOCAL_DATA_PATH, index_col=0)
+        else:
+            st.error(
+                "Falha ao carregar dados do R2. Verifique se o bucket/objeto esta publico "
+                "e se a URL esta correta.\n\n"
+                + "\n".join(errors)
+            )
+            st.stop()
     df["data_de_cadastro"] = pd.to_datetime(df["data_de_cadastro"], errors="coerce")
 
     text_cols = [
